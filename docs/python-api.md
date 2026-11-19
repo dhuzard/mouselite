@@ -185,6 +185,7 @@ tracks = analysis.Tracks.from_coco("output/cage_results/cage_annotations.json", 
 | `area` | `(T, N)` | box or mask area, NaN where absent |
 | `keypoints` | `(T, N, K, 2)` | pose keypoints, or `None` |
 | `keypoint_names` | `K` names | the export's category `keypoints` when it lists them; otherwise `kp0`, `kp1`, …, which is what `mouselite run` exports give today |
+| `keypoint_scores` | `(T, N, K)` | the model's confidence in each keypoint, NaN where absent; `None` for an export without `keypoint_scores` |
 | `masks` | `(T, N, H, W)` | only with `masks=True`, else `None` |
 | `fps`, `image_size`, `video` | | what the export recorded about the video |
 
@@ -205,15 +206,18 @@ to your unit (cm per pixel), and applies to distances, speeds and areas.
 
 Long table, one row per `(frame, track)` the animal was seen on: `frame_index`,
 `time` when `fps` is known, `track_id`, `x`, `y`, the box corners, `area`, and a
-`<name>_x` / `<name>_y` pair per keypoint. This is what `<stem>_trajectories.csv` holds.
+`<name>_x` / `<name>_y` pair per keypoint, with its confidence as `<name>_score` when
+the export has `keypoint_scores`. This is what `<stem>_trajectories.csv` holds.
 
 ### `Tracks.to_deeplabcut(path=None, scorer="mouselite") -> DataFrame`
 
 The DeepLabCut-style prediction table most downstream tools read: columns
 `(scorer, [individuals,] bodyparts, coords)`, one row per frame. The `individuals`
 level is only added for multi-animal exports, as DLC does; without keypoints the box
-centre is written as a single `centroid` bodypart. MouseLite exports no per-keypoint
-confidence, so `likelihood` is 1 where a point was seen and 0 where it was not.
+centre is written as a single `centroid` bodypart. `likelihood` is the model's confidence
+in each keypoint and 0 where a point was not seen; without a confidence to report (an
+export with no `keypoint_scores`, or the `centroid` bodypart) it is 1 where a point was
+seen.
 Written to `path` as CSV, or HDF5 for a `.h5` suffix.
 
 ### Kinematics, cleaning and space

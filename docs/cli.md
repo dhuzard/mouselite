@@ -43,8 +43,10 @@ and writes, per video:
 where `<stem>` is the video's file name without extension. Prints `wrote <path>` with
 each video's results folder on success. `<stem>_annotations.json` is a COCO detection/keypoint file, with the
 frame index, a confidence `score` and track id per annotation, and the video's frame rate added.
+A `keypoints` run also stores the model's confidence in each keypoint as `keypoint_scores`, one
+value per keypoint in the order of `keypoints`.
 `<stem>_trajectories.csv` is the same data as a long table with one row per frame and track
-(box centre, box, area and keypoints); `<stem>_summary.csv` has one row per track (frames
+(box centre, box, area, keypoints and their confidence); `<stem>_summary.csv` has one row per track (frames
 seen, coverage, distance, mean and max speed, duration, mean area). Both are in
 pixels and, using the video's frame rate, seconds; the tracks are raw. For real-world
 units, gap filling and smoothing, see [`mouselite.analysis`](python-api.md#mouseliteanalysis).

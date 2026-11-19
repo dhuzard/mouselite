@@ -25,6 +25,9 @@ class Tracks:
     area: np.ndarray  # (T, N) float32, NaN when absent
     keypoints: np.ndarray | None = None  # (T, N, K, 2) float32, NaN when absent
     keypoint_names: list[str] = field(default_factory=list)
+    # (T, N, K) float32 model confidence per keypoint, NaN when absent; None when the
+    # export has none (it predates `keypoint_scores`, or the model gives no confidence)
+    keypoint_scores: np.ndarray | None = None
     masks: np.ndarray | None = None  # (T, N, H, W) bool, all False when absent
     fps: float | None = None
     image_size: tuple[int, int] | None = None  # (width, height)
@@ -72,6 +75,9 @@ class Tracks:
             area=self.area[:, idx],
             keypoints=None if self.keypoints is None else self.keypoints[:, idx],
             keypoint_names=self.keypoint_names,
+            keypoint_scores=(
+                None if self.keypoint_scores is None else self.keypoint_scores[:, idx]
+            ),
             masks=None if self.masks is None else self.masks[:, idx],
             fps=self.fps,
             image_size=self.image_size,
@@ -130,6 +136,8 @@ class Tracks:
             for k, name in enumerate(self.keypoint_names):
                 table[f"{name}_x"] = self.keypoints[t, n, k, 0]
                 table[f"{name}_y"] = self.keypoints[t, n, k, 1]
+                if self.keypoint_scores is not None:
+                    table[f"{name}_score"] = self.keypoint_scores[t, n, k]
         return pd.DataFrame(table)
 
     def to_deeplabcut(
@@ -142,15 +150,21 @@ class Tracks:
         Columns are `(scorer, [individuals,] bodyparts, coords)` with `coords` in
         `x, y, likelihood`, one row per frame indexed by `frame_index`. The
         `individuals` level is only added for multi-animal exports, as DLC does. Without
-        keypoints the box centre is written as a single `centroid` bodypart. MouseLite
-        exports no per-keypoint confidence, so `likelihood` is 1 where a point was seen
-        and 0 where it was not. Written to `path` as CSV (or HDF5 for `.h5`) when given.
+        keypoints the box centre is written as a single `centroid` bodypart.
+        `likelihood` is the model's confidence in each keypoint (`keypoint_scores`) and
+        0 where a point was not seen. Where there is no confidence to report (an export
+        without `keypoint_scores`, or the `centroid` bodypart) it is 1 where a point
+        was seen. Written to `path` as CSV (or HDF5 for `.h5`) when given.
         """
         if self.keypoints is not None:
             xy, bodyparts = self.keypoints, self.keypoint_names
         else:
             xy, bodyparts = self.centroids[:, :, None], ["centroid"]
-        likelihood = (~np.isnan(xy[..., 0])).astype(np.float32)
+        seen = ~np.isnan(xy[..., 0])
+        likelihood = seen.astype(np.float32)
+        if self.keypoints is not None and self.keypoint_scores is not None:
+            scored = seen & ~np.isnan(self.keypoint_scores)
+            likelihood[scored] = self.keypoint_scores[scored]
         values = np.concatenate([np.nan_to_num(xy), likelihood[..., None]], axis=-1)
 
         individuals = [f"individual{t}" for t in self.track_ids]
@@ -186,7 +200,8 @@ class Tracks:
         `info`. `masks=True` also decodes a segmentation export's masks into a
         `(T, N, H, W)` bool array: one byte per pixel per track per frame, so a long
         recording at full resolution takes gigabytes; run with `--every` or `select`
-        fewer tracks if that is too much.
+        fewer tracks if that is too much. Each annotation's `keypoint_scores`, when the
+        export has them, are read into `keypoint_scores`.
         """
         with open(annotations_path) as f:
             coco = json.load(f)
@@ -213,6 +228,12 @@ class Tracks:
             if n_keypoints
             else None
         )
+        has_scores = any(a.get("keypoint_scores") for a in annotations)
+        keypoint_scores = (
+            np.full((*shape, n_keypoints), np.nan, dtype=np.float32)
+            if keypoints is not None and has_scores
+            else None
+        )
         image_size = (images[0]["width"], images[0]["height"]) if images else None
         mask_array = (
             np.zeros((*shape, image_size[1], image_size[0]), dtype=bool)
@@ -230,6 +251,9 @@ class Tracks:
                 xyv = np.asarray(a["keypoints"], dtype=np.float32).reshape(-1, 3)
                 xy = np.where(xyv[:, 2:] > 0, xyv[:, :2], np.nan)
                 keypoints[t, n, : len(xy)] = xy
+            if keypoint_scores is not None and a.get("keypoint_scores"):
+                scores = np.asarray(a["keypoint_scores"], dtype=np.float32)
+                keypoint_scores[t, n, : len(scores)] = scores[:n_keypoints]
             if mask_array is not None and a.get("segmentation"):
                 mask_array[t, n] = _decode_segmentation(
                     a["segmentation"], size_of_image[a["image_id"]]
@@ -248,6 +272,7 @@ class Tracks:
             area=area,
             keypoints=keypoints,
             keypoint_names=keypoint_names,
+            keypoint_scores=keypoint_scores,
             masks=mask_array,
             fps=fps if fps is not None else info.get("fps"),
             image_size=image_size,
