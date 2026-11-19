@@ -65,6 +65,20 @@ class RecordingModel(FakeKeypointModel):
         return super().predict(frame, threshold, include_source_image)
 
 
+class NoConfidenceModel(FakeKeypointModel):
+    """A keypoints model that reports no confidence per keypoint."""
+
+    def predict(
+        self,
+        frame: np.ndarray,
+        threshold: float,
+        include_source_image: bool,
+    ) -> sv.KeyPoints:
+        keypoints = super().predict(frame, threshold, include_source_image)
+        keypoints.keypoint_confidence = None
+        return keypoints
+
+
 class FakeTracker(BaseTracker):
     def __init__(self) -> None:
         self.updates = 0
@@ -111,10 +125,12 @@ def test_run_keypoints(tmp_path: Path) -> None:
     assert "keypoints" in coco["annotations"][0]
     assert coco["annotations"][0]["track_id"] == 0
     assert coco["annotations"][0]["score"] == pytest.approx(0.9)
+    assert coco["annotations"][0]["keypoint_scores"] == pytest.approx([0.9, 0.8, 0.7])
 
     trajectories = pd.read_csv(results_dir / "smoke_trajectories.csv")
     assert len(trajectories) == len(coco["annotations"])
     assert {"frame_index", "time", "track_id", "x", "y"} <= set(trajectories.columns)
+    assert trajectories.kp2_score.tolist() == pytest.approx([0.7] * len(trajectories))
     summary = pd.read_csv(results_dir / "smoke_summary.csv")
     assert summary.track_id.tolist() == [0]
     assert {"frames", "distance", "mean_speed", "duration"} <= set(summary.columns)
@@ -192,3 +208,23 @@ def test_process_frame_runs_model_every_n_frames() -> None:
     assert len(model.frames) == 2
     assert results[1] is results[0]
     assert results[3] is results[2]
+
+
+def test_run_without_keypoint_confidence(tmp_path: Path) -> None:
+    """No `keypoint_scores` in the export when the model gives no keypoint confidence."""
+    video_path = tmp_path / "smoke.mp4"
+    make_video(video_path)
+
+    pipeline = Pipeline(model=NoConfidenceModel(), tracker=FakeTracker())
+    results_dir = pipeline.run(
+        video_path,
+        output_dir=tmp_path / "output",
+        show_progress=False,
+        video=False,
+    )
+
+    coco = json.loads((results_dir / "smoke_annotations.json").read_text())
+    assert "keypoints" in coco["annotations"][0]
+    assert "keypoint_scores" not in coco["annotations"][0]
+    trajectories = pd.read_csv(results_dir / "smoke_trajectories.csv")
+    assert not [column for column in trajectories if column.endswith("_score")]
