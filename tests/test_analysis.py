@@ -8,10 +8,16 @@ import pytest
 from mouselite import analysis
 
 
-def make_export(path: Path, every: int = 1, fps: float | None = 10.0) -> None:
+def make_export(
+    path: Path,
+    every: int = 1,
+    fps: float | None = 10.0,
+    scores: bool = False,
+) -> None:
     """Two tracks over 6 sampled frames: track 0 walks right 10 px per frame from (0, 0),
     track 1 sits still at (100, 100) and is missing on the 3rd frame. One unconfirmed
     detection (track_id -1) is thrown in, plus keypoints "nose" and "tail" on track 0.
+    `scores` adds the per-keypoint confidences a keypoints run exports.
     """
     images, annotations = [], []
     for t in range(6):
@@ -36,6 +42,7 @@ def make_export(path: Path, every: int = 1, fps: float | None = 10.0) -> None:
                 "track_id": 0,
                 "keypoints": [x + 5, 0, 2, x - 5, 0, 2],  # nose ahead, tail behind
                 "num_keypoints": 2,
+                **({"keypoint_scores": [0.9, 0.4]} if scores else {}),
             }
         )
         if t != 2:
@@ -50,6 +57,7 @@ def make_export(path: Path, every: int = 1, fps: float | None = 10.0) -> None:
                     "track_id": 1,
                     "keypoints": [100, 100, 2, 0, 0, 0],  # tail not visible
                     "num_keypoints": 1,
+                    **({"keypoint_scores": [0.8, 0.0]} if scores else {}),
                 }
             )
     annotations.append({**annotations[0], "id": len(annotations) + 1, "track_id": -1})
@@ -285,3 +293,36 @@ def test_summary_and_tables(tmp_path: Path) -> None:
 
     single = tracks.select([0]).to_deeplabcut()
     assert single.columns.names == ["scorer", "bodyparts", "coords"]
+
+
+def test_keypoint_scores(tmp_path: Path) -> None:
+    make_export(tmp_path / "annotations.json", scores=True)
+    tracks = analysis.Tracks.from_coco(tmp_path / "annotations.json")
+
+    assert tracks.keypoint_scores.shape == (6, 2, 2)
+    np.testing.assert_allclose(tracks.keypoint_scores[:, 0], [[0.9, 0.4]] * 6)
+    np.testing.assert_allclose(tracks.keypoint_scores[0, 1], [0.8, 0.0])
+    assert np.isnan(tracks.keypoint_scores[2, 1]).all()  # track 1 is missing there
+    assert tracks.select([1]).keypoint_scores.shape == (6, 1, 2)
+
+    df = tracks.to_dataframe()
+    assert df[df.track_id == 0].nose_score.tolist() == pytest.approx([0.9] * 6)
+    assert df[df.track_id == 0].tail_score.tolist() == pytest.approx([0.4] * 6)
+
+    dlc = tracks.to_deeplabcut()
+    nose = dlc[("mouselite", "individual0", "nose", "likelihood")]
+    assert nose.tolist() == pytest.approx([0.9] * 6)
+    seen = dlc[("mouselite", "individual1", "nose", "likelihood")]
+    assert seen.tolist() == pytest.approx([0.8, 0.8, 0.0, 0.8, 0.8, 0.8])  # 0: not seen
+    assert dlc[("mouselite", "individual1", "tail", "likelihood")].tolist() == [0.0] * 6
+
+
+def test_export_without_keypoint_scores(tmp_path: Path) -> None:
+    """Exports written before `keypoint_scores` load as before: seen is likelihood 1."""
+    make_export(tmp_path / "annotations.json")
+    tracks = analysis.Tracks.from_coco(tmp_path / "annotations.json")
+
+    assert tracks.keypoint_scores is None
+    assert not [column for column in tracks.to_dataframe() if column.endswith("_score")]
+    dlc = tracks.to_deeplabcut()
+    assert dlc[("mouselite", "individual0", "nose", "likelihood")].tolist() == [1.0] * 6

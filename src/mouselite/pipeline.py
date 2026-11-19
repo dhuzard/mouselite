@@ -50,6 +50,8 @@ def _keypoints_to_detections(keypoints: sv.KeyPoints) -> sv.Detections:
     detections.data["keypoints_xy"] = keypoints.xy
     if keypoints.visible is not None:
         detections.data["keypoints_visible"] = keypoints.visible
+    if keypoints.keypoint_confidence is not None:
+        detections.data["keypoints_confidence"] = keypoints.keypoint_confidence
     return detections
 
 
@@ -58,8 +60,9 @@ def _detections_to_coco(
     image_id: int,
     annotation_id: int,
 ) -> tuple[list[dict], int]:
-    """Build COCO annotation dicts for one image, adding `score`, `track_id` and
-    `keypoints`."""
+    """Build COCO annotation dicts for one image, adding `score`, `track_id`,
+    `keypoints` and, when the model gives one, a confidence per keypoint as
+    `keypoint_scores`."""
     coco_annotations, annotation_id = detections_to_coco_annotations(
         detections,
         image_id,
@@ -97,6 +100,15 @@ def _detections_to_coco(
         ):
             annotation["keypoints"] = keypoints.reshape(-1).tolist()
             annotation["num_keypoints"] = int((keypoints[:, 2] > 0).sum())
+
+        confidence = detections.data.get("keypoints_confidence")
+        if confidence is not None:
+            for annotation, scores in zip(
+                coco_annotations,
+                np.asarray(confidence, dtype=np.float32),  # (K,): one per keypoint
+                strict=True,
+            ):
+                annotation["keypoint_scores"] = scores.tolist()
 
     return coco_annotations, annotation_id
 
